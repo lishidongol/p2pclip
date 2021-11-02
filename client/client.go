@@ -5,7 +5,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 	sync2 "sync"
 )
@@ -24,8 +23,16 @@ func main() {
 		log.Printf("conn server failed, err:%v\n", err)
 		return
 	}
+	defer func(Conn net.Conn) {
+		err := Conn.Close()
+		if err != nil {
+			log.Println("server 连接关闭!")
+			return
+		}
+	}(conn)
 	sync.Add(1)
 	go ListenLocalInput(conn)
+	go ListenRemoteInput(conn)
 	sync.Wait()
 }
 
@@ -45,40 +52,28 @@ func ListenLocalInput(conn net.Conn) {
 		if len(s) <= 0 {
 			continue
 		}
-		// 添加字符串标识位
-		flag := "str_" + strconv.Itoa(len(s))
 		// 发送字符串长度
-		_, err := conn.Write([]byte(flag))
+		_, err := conn.Write([]byte(s))
 		if err != nil {
 			log.Printf("发送错误：%v\n", err)
 			continue
 		}
-		// 读取服务器返回确认数据
-		var buf [1024]byte
-		n, err := conn.Read(buf[:])
+	}
+}
+
+func ListenRemoteInput(conn net.Conn) {
+	for {
+		var buf = make([]byte, 10240)
+		input := bufio.NewReader(conn)
+		s, err := input.Read(buf[:])
 		if err != nil {
-			log.Printf("发送错误：%v\n", err)
-			continue
+			if err.Error() == "EOF" {
+				log.Printf("server 退出!")
+				os.Exit(0)
+			}
+			log.Println("接收失败! err: " + err.Error())
 		}
-		str := string(buf[:n])
-		if str == "str_ack" {
-			// 开始发送字符
-			_, err := conn.Write([]byte(s))
-			if err != nil {
-				log.Printf("发送错误：%v\n", err)
-				continue
-			}
-			buf := make([]byte, 1024)
-			n, err := conn.Read(buf[:])
-			if err != nil {
-				log.Printf("接收错误：%v\n", err)
-				continue
-			}
-			str = string(buf[:n])
-			if str == "str_fin" {
-				continue
-			}
-		}
-		log.Printf("服务器错误！")
+		str := string(buf[:s])
+		log.Printf("server --> " + str)
 	}
 }

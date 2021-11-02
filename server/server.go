@@ -4,14 +4,18 @@ import (
 	"bufio"
 	"log"
 	"net"
+	"os"
 	"p2pclip/common"
-	"strconv"
 	"strings"
+	sync2 "sync"
 )
 
 func init() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 }
+
+var sync sync2.WaitGroup
+var clientMap = make(map[string]common.P2pclient)
 
 // 一个点对点文件、文字即时同步GUI工具-服务端
 func main() {
@@ -20,6 +24,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	go ListenLocalInput()
 	for {
 		accept, err := listen.Accept()
 		if err != nil {
@@ -30,6 +35,7 @@ func main() {
 		c := common.P2pclient{}
 		c.Name = accept.RemoteAddr().String()
 		c.Conn = accept
+		clientMap[c.Name] = c
 		go Process(c)
 	}
 }
@@ -40,58 +46,64 @@ func Process(client common.P2pclient) {
 	defer func(conn net.Conn) {
 		err := conn.Close()
 		if err != nil {
-			panic(err)
+			log.Println("连接关闭! err: " + err.Error())
+			return
 		}
 	}(client.Conn)
-	// 针对当前连接做发送和接受操作
-	// 标示是否正在传输文件
-	//isTransFile := false
-	for {
-		reader := bufio.NewReader(client.Conn)
-		var buf [1024]byte
-		n, err := reader.Read(buf[:])
-		if err != nil {
-			if "EOF" == err.Error() {
-				log.Println("客户端 " + client.Name + " 断开连接！")
-				return
-			}
-			log.Printf("read from conn failed, err:%v\n\n", err)
-		}
-		recv := string(buf[:n])
-		if recv == "ok" {
-			log.Println("数据接收完毕！")
-		} else if strings.HasPrefix(recv, "str_") {
-			split := strings.Split(recv, "_")
-			if len(split) != 2 {
-				log.Printf("格式错误！")
-				continue
-			}
-			// 字符长度
-			length, _ := strconv.Atoi(split[1])
-			// 将接受到的数据返回给客户端
-			_, err := client.Conn.Write([]byte("str_ack"))
-			if err != nil {
-				log.Printf("发送字符错误: %v\n", err)
-				continue
-			}
-			if length <= 0 {
-				log.Println("空数据，丢弃")
-				continue
-			}
-			var buf = make([]byte, length)
-			reader := bufio.NewReader(client.Conn)
-			_, err = reader.Read(buf[:])
-			if err != nil {
-				log.Printf("接收数据错误：%v\n", err)
-				continue
-			}
-			log.Printf(client.Name + " --> " + string(buf[:length]))
 
-			// 返回响应
-			_, err = client.Conn.Write([]byte("str_fin"))
-			if err != nil {
-				log.Printf("接收数据错误：%v\n", err)
-				continue
+	ListenRemoteInput(client)
+}
+
+func ListenLocalInput() {
+	// 2、使用 conn 连接进行数据的发送和接收
+	for {
+		input := bufio.NewReader(os.Stdin)
+		s, _ := input.ReadString('\n')
+		s = strings.TrimSpace(s)
+		if strings.ToUpper(s) == "Q" {
+			os.Exit(0)
+		}
+		if len(s) <= 0 {
+			continue
+		}
+		if len(clientMap) > 0 {
+			// 循环给客户端发送数据
+			for _, pclient := range clientMap {
+				_, err := pclient.Conn.Write([]byte(s))
+				if err != nil {
+					log.Println(pclient.Name + " 发送失败! err: " + err.Error())
+				}
+			}
+		}
+	}
+}
+
+func ListenRemoteInput(client common.P2pclient) {
+	for {
+		var buf = make([]byte, 10240)
+		input := bufio.NewReader(client.Conn)
+		s, err := input.Read(buf[:])
+		if err != nil {
+			if err.Error() == "EOF" {
+				// 删除客户端
+				log.Println("删除客户端:" + client.Name)
+				delete(clientMap, client.Name)
+				break
+			}
+			log.Println("接收失败! err: " + err.Error())
+		}
+		str := string(buf[:s])
+		log.Printf(client.Name + " --> " + str)
+		// 转发
+		if len(clientMap) > 0 {
+			// 循环给客户端发送数据
+			for _, pclient := range clientMap {
+				if pclient.Name != client.Name {
+					_, err := pclient.Conn.Write([]byte(str))
+					if err != nil {
+						log.Println(pclient.Name + " 发送失败! err: " + err.Error())
+					}
+				}
 			}
 		}
 	}
